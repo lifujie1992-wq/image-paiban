@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PSB 图片模板工作台</title>
+    <link rel="stylesheet" href="/static/styles.css?v=25">
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div>
+            <h1>图版工作台</h1>
+            <span>PSD/PSB 图片模板导出</span>
+          </div>
+          <div class="status-pill" id="status">正在读取模板</div>
+        </div>
+
+        <section class="panel">
+          <div class="panel-title">
+            <span>模板</span>
+            <small>PSD / PSB</small>
+          </div>
+          <button class="secondary full-width" id="newTemplateBtn" type="button">新建模板</button>
+          <input id="templateInput" class="file-input-hidden" type="file" accept=".psd,.psb">
+          <button class="secondary full-width" id="templateBtn" type="button">导入 PSD/PSB 模板</button>
+          <button class="secondary full-width" id="detectSlotsBtn" type="button">一键识别图片位</button>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">
+            <span>素材</span>
+            <small>拖入或选择</small>
+          </div>
+          <label class="dropzone" id="dropzone">
+            <input id="fileInput" type="file" accept="image/*" multiple>
+            <strong>拖入图片</strong>
+            <span>或点击选择素材</span>
+          </label>
+          <input id="folderInput" class="file-input-hidden" type="file" accept="image/*" webkitdirectory multiple>
+          <button class="secondary full-width" id="folderMatchBtn" type="button">选择目录并按编号填充</button>
+          <div class="asset-grid" id="assetGrid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">
+            <span>图片位</span>
+            <small>排序决定层级</small>
+          </div>
+          <div class="slot-list" id="slotList"></div>
+          <button class="secondary full-width" id="saveSlotsPanel" type="button">保存图片位</button>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">
+            <span>导出</span>
+            <small>生成长图</small>
+          </div>
+          <div class="control-row">
+            <label>填充</label>
+            <select id="fitMode">
+              <option value="cover">铺满裁切</option>
+              <option value="contain">完整留白</option>
+            </select>
+          </div>
+          <div class="control-row">
+            <label>格式</label>
+            <select id="format">
+              <option value="jpg">JPG</option>
+              <option value="png">PNG</option>
+            </select>
+          </div>
+          <button class="primary" id="exportBtn">导出图片</button>
+          <a class="download" id="downloadLink" href="#" target="_blank" hidden>打开导出图</a>
+        </section>
+      </aside>
+
+      <main class="canvas-wrap">
+        <div class="toolbar">
+          <div class="tool-group">
+            <button id="zoomOut" title="缩小">-</button>
+            <span id="zoomLabel">100%</span>
+            <button id="zoomIn" title="放大">+</button>
+            <button id="fitView">适应窗口</button>
+          </div>
+          <div class="tool-group">
+            <button id="toggleSoloSlot" title="只在画布上显示当前选中的图片位，方便单独检查和调整">只显示选中</button>
+            <button id="toggleEditHotspots">编辑图片位</button>
+            <button id="addHotspot">新增图片位</button>
+          </div>
+          <div class="tool-group danger-zone">
+            <button id="clearImages">清空图片</button>
+            <button id="deleteHotspot">删除图片位</button>
+            <button id="clearHotspots">清空图片位</button>
+          </div>
+          <div class="tool-group push-right">
+            <button id="saveSlots">保存图片位</button>
+          </div>
+        </div>
+        <div class="viewport" id="viewport">
+          <div class="canvas" id="canvas">
+            <img id="templateImg" alt="模板预览">
+            <div id="emptyCanvasHint">空白画布：请从左侧导入 PSD/PSB 模板</div>
+            <div id="overlay"></div>
+            <div id="hitMenu" class="hit-menu" hidden></div>
+            <img id="topOverlayImg" alt="">
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" id="hotspotNumberModal" hidden>
+      <form class="number-modal" id="hotspotNumberForm">
+        <div class="modal-title">新增图片位编号</div>
+        <label class="number-field">
+          <span>编号</span>
+          <input id="hotspotNumberInput" type="number" min="1" step="1">
+        </label>
+        <div class="modal-hint" id="hotspotNumberHint"></div>
+        <div class="modal-actions">
+          <button type="button" id="cancelHotspotNumber">取消</button>
+          <button type="submit" class="primary">确认</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="loading-backdrop" id="templateLoadingModal" hidden>
+      <div class="loading-modal" role="status" aria-live="polite" aria-busy="true">
+        <div class="loading-mark">
+          <div class="loading-ring"></div>
+          <div class="loading-core">PSD</div>
+        </div>
+        <div class="loading-copy">
+          <div class="loading-title">正在导入模板</div>
+          <p id="templateLoadingText">正在上传并解析 PSD/PSB，大文件可能需要 30-60 秒。</p>
+        </div>
+        <div class="loading-steps">
+          <span>上传文件</span>
+          <span>解析图层</span>
+          <span>生成预览</span>
+        </div>
+      </div>
+    </div>
+
+    <input id="slotFileInput" class="file-input-hidden" type="file" accept="image/*">
+    <script src="/static/app.js?v=34"></script>
+  </body>
+</html>

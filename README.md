@@ -1,11 +1,11 @@
-# PSB Template Workbench
+﻿# PSB Template Workbench
 
 本地图片模板工作台，用于把素材图放入模板图片位并导出长图。
 
 运行：
 
 ```powershell
-cd C:\Users\Administrator\psb-template-workbench
+cd D:\psb-template-workbench
 py -3.10 app.py
 ```
 

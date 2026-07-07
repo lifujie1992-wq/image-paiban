@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PSB 图片模板工作台</title>
-    <link rel="stylesheet" href="/static/styles.css?v=25">
+    <link rel="stylesheet" href="/static/styles.css?v=37">
   </head>
   <body>
     <div class="app">
@@ -25,6 +25,9 @@
           <button class="secondary full-width" id="newTemplateBtn" type="button">新建模板</button>
           <input id="templateInput" class="file-input-hidden" type="file" accept=".psd,.psb">
           <button class="secondary full-width" id="templateBtn" type="button">导入 PSD/PSB 模板</button>
+          <input id="appendTemplateInput" class="file-input-hidden" type="file" accept=".psd,.psb">
+          <button class="secondary full-width" id="appendTemplateBtn" type="button">追加 PSD/PSB 到末尾</button>
+          <div class="template-list" id="templateList"></div>
           <button class="secondary full-width" id="detectSlotsBtn" type="button">一键识别图片位</button>
         </section>
 
@@ -39,8 +42,11 @@
             <span>或点击选择素材</span>
           </label>
           <input id="folderInput" class="file-input-hidden" type="file" accept="image/*" webkitdirectory multiple>
+          <input id="styleExampleInput" class="file-input-hidden" type="file" accept="image/*" webkitdirectory multiple>
+          <button class="secondary full-width" id="styleLearnBtn" type="button" title="整张成片会按图片位裁开；内容样本请放到 1、2、3 等子文件夹，或文件名用 1-xxx.jpg 标注图片位">导入标注样本学习</button>
+          <button class="secondary full-width" id="clearStyleProfileBtn" type="button">清空风格学习</button>
           <button class="secondary full-width" id="folderMatchBtn" type="button">选择目录并按编号填充</button>
-          <div class="asset-grid" id="assetGrid"></div>
+          <button class="secondary full-width" id="folderStyleMatchBtn" type="button">选择目录并按风格填充</button>
         </section>
 
         <section class="panel">
@@ -95,6 +101,7 @@
             <button id="clearHotspots">清空图片位</button>
           </div>
           <div class="tool-group push-right">
+            <button id="modelSettingsBtn" type="button">模型设置</button>
             <button id="saveSlots">保存图片位</button>
           </div>
         </div>
@@ -117,10 +124,55 @@
           <span>编号</span>
           <input id="hotspotNumberInput" type="number" min="1" step="1">
         </label>
+        <label class="number-field">
+          <span>形状</span>
+          <select id="hotspotShapeInput">
+            <option value="rect">矩形</option>
+            <option value="circle">圆形</option>
+          </select>
+        </label>
         <div class="modal-hint" id="hotspotNumberHint"></div>
         <div class="modal-actions">
           <button type="button" id="cancelHotspotNumber">取消</button>
           <button type="submit" class="primary">确认</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="modal-backdrop" id="modelSettingsModal" hidden>
+      <form class="settings-modal" id="modelSettingsForm">
+        <div class="modal-title">模型设置</div>
+        <label class="settings-field">
+          <span>接口类型</span>
+          <select id="modelProviderInput">
+            <option value="api">OpenAI 兼容 API</option>
+            <option value="ollama">本地 Ollama</option>
+          </select>
+        </label>
+        <label class="settings-field">
+          <span>模型地址</span>
+          <input id="modelBaseUrlInput" type="text" autocomplete="off" placeholder="https://example.com/v1">
+        </label>
+        <label class="settings-field">
+          <span>模型名称</span>
+          <input id="modelNameInput" type="text" autocomplete="off" placeholder="gpt-5.5">
+        </label>
+        <label class="settings-field">
+          <span>API 密钥</span>
+          <input id="modelApiKeyInput" type="password" autocomplete="new-password" placeholder="留空则保持已保存密钥">
+        </label>
+        <label class="settings-field">
+          <span>超时秒数</span>
+          <input id="modelTimeoutInput" type="number" min="15" max="600" step="1">
+        </label>
+        <label class="settings-check">
+          <input id="modelClearKeyInput" type="checkbox">
+          <span>清空已保存密钥</span>
+        </label>
+        <div class="modal-hint" id="modelSettingsHint"></div>
+        <div class="modal-actions">
+          <button type="button" id="cancelModelSettings">取消</button>
+          <button type="submit" class="primary">保存</button>
         </div>
       </form>
     </div>
@@ -144,6 +196,6 @@
     </div>
 
     <input id="slotFileInput" class="file-input-hidden" type="file" accept="image/*">
-    <script src="/static/app.js?v=34"></script>
+    <script src="/static/app.js?v=52"></script>
   </body>
 </html>

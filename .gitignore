@@ -18,3 +18,8 @@ overlay_order_asset.png
 
 .DS_Store
 Thumbs.db
+
+.env.local
+model_settings.json
+asset_analysis.json
+style_examples/

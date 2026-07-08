@@ -11,6 +11,7 @@ import shutil
 import urllib.error
 import urllib.request
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -111,6 +112,9 @@ STYLE_SLOT_SEMANTIC_KEYS = (
     "semanticReason",
     "semanticUpdatedAt",
 )
+EXPORT_SPLIT_MIN_PART_HEIGHT = int(os.environ.get("EXPORT_SPLIT_MIN_PART_HEIGHT", "3500"))
+EXPORT_SPLIT_EXPLICIT_MIN_PART_HEIGHT = int(os.environ.get("EXPORT_SPLIT_EXPLICIT_MIN_PART_HEIGHT", "300"))
+EXPORT_SPLIT_FULL_WIDTH_SLOT_RATIO = float(os.environ.get("EXPORT_SPLIT_FULL_WIDTH_SLOT_RATIO", "0.92"))
 
 
 def normalize_ollama_host(value: str) -> str:
@@ -534,6 +538,130 @@ def is_raster_template_path(path: Path) -> bool:
 
 def template_companion_overlay_path(path: Path) -> Path:
     return path.with_name(f"{path.stem}.overlay.png")
+
+
+def template_companion_split_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}.splits.json")
+
+
+def psd_slice_split_positions(psd: PSDImage) -> list[int]:
+    try:
+        slices_resource = psd.image_resources.get_data(1050)
+    except Exception:
+        return []
+    data = getattr(slices_resource, "data", {})
+    slices = data.get(b"slices", []) if hasattr(data, "get") else []
+    positions: list[int] = []
+    for item in slices:
+        if not hasattr(item, "get"):
+            continue
+        bounds = item.get(b"bounds", {})
+        if not hasattr(bounds, "get"):
+            continue
+        try:
+            left = int(bounds.get(b"Left", -1))
+            right = int(bounds.get(b"Rght", -1))
+            top = int(bounds.get(b"Top ", -1))
+            bottom = int(bounds.get(b"Btom", -1))
+        except (TypeError, ValueError):
+            continue
+        if left <= 0 and right >= int(psd.width) and 0 < top < bottom <= int(psd.height):
+            positions.append(top)
+    return sorted(set(positions))
+
+
+def psd_guide_split_positions(psd: PSDImage) -> list[int]:
+    try:
+        guide_resource = psd.image_resources.get_data(1032)
+    except Exception:
+        return []
+    positions: list[int] = []
+    for raw_position, direction in getattr(guide_resource, "data", []):
+        if int(direction) != 1:
+            continue
+        try:
+            positions.append(int(round(float(raw_position) / 32)))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(positions))
+
+
+def extract_psd_split_positions(path: Path, width: int, height: int) -> list[int]:
+    if not is_psd_template_path(path):
+        return []
+    try:
+        psd = PSDImage.open(path)
+    except Exception:
+        return []
+    positions = psd_slice_split_positions(psd) or psd_guide_split_positions(psd)
+    return normalize_split_positions(
+        positions,
+        width or int(psd.width),
+        height or int(psd.height),
+        min_part_height=EXPORT_SPLIT_EXPLICIT_MIN_PART_HEIGHT,
+    )
+
+
+def normalize_split_positions(
+    values: Any,
+    width: int,
+    height: int,
+    min_part_height: int | None = None,
+) -> list[int]:
+    del width
+    min_height = max(400, int(min_part_height or EXPORT_SPLIT_MIN_PART_HEIGHT))
+    positions: list[int] = []
+    if not isinstance(values, list):
+        return positions
+    parsed: list[int] = []
+    for value in values:
+        try:
+            y = int(round(float(value)))
+        except (TypeError, ValueError):
+            continue
+        parsed.append(y)
+    for y in sorted(set(parsed)):
+        if y < min_height or y > height - min_height:
+            continue
+        if positions and y - positions[-1] < min_height:
+            continue
+        positions.append(y)
+    return positions
+
+
+def read_template_split_guides(path: Path, width: int, height: int) -> list[int]:
+    split_path = template_companion_split_path(path)
+    if not split_path.exists():
+        return extract_psd_split_positions(path, width, height)
+    try:
+        raw = json.loads(split_path.read_text("utf-8-sig"))
+    except Exception:
+        return extract_psd_split_positions(path, width, height)
+    values = raw.get("splitPositions") if isinstance(raw, dict) else raw
+    positions = normalize_split_positions(
+        values,
+        width,
+        height,
+        min_part_height=EXPORT_SPLIT_EXPLICIT_MIN_PART_HEIGHT,
+    )
+    return positions or extract_psd_split_positions(path, width, height)
+
+
+def write_template_split_guides(path: Path, positions: list[int], width: int, height: int) -> None:
+    normalized = normalize_split_positions(
+        positions,
+        width,
+        height,
+        min_part_height=EXPORT_SPLIT_EXPLICIT_MIN_PART_HEIGHT,
+    )
+    split_path = template_companion_split_path(path)
+    if normalized:
+        split_path.write_text(
+            json.dumps({"splitPositions": normalized}, ensure_ascii=False, indent=2),
+            "utf-8",
+        )
+    elif split_path.exists():
+        split_path.unlink()
 
 
 def load_raster_template(path: Path) -> tuple[Image.Image, Image.Image]:
@@ -3357,6 +3485,162 @@ def clear_dir(path: Path) -> None:
             item.unlink()
 
 
+def cut_inside_slot(y: int, slots: list[dict[str, Any]], margin: int = 10) -> bool:
+    for slot in slots:
+        if not slot.get("visible", True):
+            continue
+        top = int(slot.get("y", 0))
+        bottom = top + int(slot.get("h", 0))
+        if top + margin < y < bottom - margin:
+            return True
+    return False
+
+
+def row_near_slot(y: int, slot_ranges: list[tuple[int, int]], margin: int = 24) -> bool:
+    return any(top - margin <= y <= bottom + margin for top, bottom in slot_ranges)
+
+
+def detect_dark_separator_bands(image: Image.Image, slots: list[dict[str, Any]]) -> list[int]:
+    width, height = image.size
+    if width <= 0 or height <= EXPORT_SPLIT_MIN_PART_HEIGHT * 2:
+        return []
+
+    sample_width = min(360, max(120, width // 3))
+    sample = image.convert("RGB").resize((sample_width, height), Image.Resampling.BOX)
+    pixels = sample.load()
+    slot_ranges = [
+        (int(slot.get("y", 0)), int(slot.get("y", 0)) + int(slot.get("h", 0)))
+        for slot in slots
+        if int(slot.get("h", 0)) > 0
+    ]
+    dark_rows: list[int] = []
+
+    for y in range(height):
+        if row_near_slot(y, slot_ranges):
+            continue
+        dark = 0
+        total = 0
+        for x in range(sample_width):
+            r, g, b = pixels[x, y]
+            lum = (r * 299 + g * 587 + b * 114) // 1000
+            total += lum
+            if lum < 72:
+                dark += 1
+        dark_frac = dark / sample_width
+        avg = total / sample_width
+        if dark_frac >= 0.92 and avg <= 72:
+            dark_rows.append(y)
+
+    groups: list[list[int]] = []
+    for y in dark_rows:
+        if not groups or y - groups[-1][-1] > 8:
+            groups.append([y])
+        else:
+            groups[-1].append(y)
+
+    positions: list[int] = []
+    for group in groups:
+        top = group[0]
+        bottom = group[-1]
+        band_height = bottom - top + 1
+        if band_height < 12:
+            continue
+        cut = (top + bottom) // 2
+        if not cut_inside_slot(cut, slots):
+            positions.append(cut)
+    return positions
+
+
+def detect_full_width_section_starts(image: Image.Image, slots: list[dict[str, Any]]) -> list[int]:
+    width, height = image.size
+    positions: list[int] = []
+    edge_margin = max(16, int(width * 0.03))
+    min_width = int(width * EXPORT_SPLIT_FULL_WIDTH_SLOT_RATIO)
+    for slot in slots:
+        if not slot.get("visible", True):
+            continue
+        x = int(slot.get("x", 0))
+        y = int(slot.get("y", 0))
+        w = int(slot.get("w", 0))
+        if y <= 0 or y >= height:
+            continue
+        reaches_edges = x <= edge_margin and x + w >= width - edge_margin
+        if w >= min_width and reaches_edges and not cut_inside_slot(y, slots):
+            positions.append(y)
+    return positions
+
+
+def detect_export_split_positions(image: Image.Image, slots: list[dict[str, Any]]) -> list[int]:
+    width, height = image.size
+    template_guides = read_template_split_guides(active_template_path(), width, height)
+    if template_guides:
+        safe_template_guides = [
+            y for y in template_guides
+            if not cut_inside_slot(y, slots)
+        ]
+        return normalize_split_positions(
+            safe_template_guides,
+            width,
+            height,
+            min_part_height=EXPORT_SPLIT_EXPLICIT_MIN_PART_HEIGHT,
+        )
+
+    candidates = [
+        *detect_dark_separator_bands(image, slots),
+        *detect_full_width_section_starts(image, slots),
+    ]
+    safe_candidates = [
+        y for y in sorted(set(candidates))
+        if not cut_inside_slot(y, slots)
+    ]
+    return normalize_split_positions(safe_candidates, width, height)
+
+
+def export_ranges(height: int, positions: list[int]) -> list[tuple[int, int]]:
+    points = [0, *positions, height]
+    ranges: list[tuple[int, int]] = []
+    for top, bottom in zip(points, points[1:]):
+        if bottom - top <= 0:
+            continue
+        ranges.append((top, bottom))
+    return ranges
+
+
+def export_image_bytes(image: Image.Image, output_format: str) -> bytes:
+    buffer = io.BytesIO()
+    if output_format == "png":
+        image.save(buffer, format="PNG")
+    else:
+        if image.mode != "RGBA":
+            image = image.convert("RGBA")
+        background = Image.new("RGB", image.size, (255, 255, 255))
+        background.paste(image, mask=image.split()[-1])
+        background.save(buffer, format="JPEG", quality=95, optimize=True)
+    return buffer.getvalue()
+
+
+def save_export_image(image: Image.Image, path: Path, output_format: str) -> None:
+    if output_format == "png":
+        image.save(path)
+    else:
+        path.write_bytes(export_image_bytes(image, output_format))
+
+
+def save_split_zip(
+    image: Image.Image,
+    positions: list[int],
+    output_format: str,
+    target: Path,
+) -> int:
+    extension = "png" if output_format == "png" else "jpg"
+    ranges = export_ranges(image.height, positions)
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for index, (top, bottom) in enumerate(ranges, start=1):
+            part = image.crop((0, top, image.width, bottom))
+            archive.writestr(f"export_{index:02d}.{extension}", export_image_bytes(part, output_format))
+    return len(ranges)
+
+
 @app.get("/")
 def index() -> str:
     return render_template("index.html")
@@ -3525,6 +3809,9 @@ def api_delete_template(template_id: str) -> Any:
     companion_overlay = template_companion_overlay_path(template_path)
     if companion_overlay.exists() and is_path_under(companion_overlay, TEMPLATE_DIR):
         companion_overlay.unlink()
+    companion_splits = template_companion_split_path(template_path)
+    if companion_splits.exists() and is_path_under(companion_splits, TEMPLATE_DIR):
+        companion_splits.unlink()
 
     write_template_records(records)
     if was_active:
@@ -3783,6 +4070,19 @@ def api_template_append() -> Any:
         appended_slots = offset_appended_slots(appended_slots, 0, y_offset, {slot["id"] for slot in current_slots})
 
         composite_path = save_composite_template(base_image, base_overlay, appended_image, appended_overlay)
+        base_split_guides = read_template_split_guides(Path(current["path"]), base_image.width, base_image.height)
+        appended_split_guides = read_template_split_guides(source_path, appended_image.width, appended_image.height)
+        split_guides = [
+            *base_split_guides,
+            y_offset,
+            *[y_offset + y for y in appended_split_guides],
+        ]
+        write_template_split_guides(
+            composite_path,
+            split_guides,
+            max(base_image.width, appended_image.width),
+            base_image.height + appended_image.height,
+        )
         name = f"{current.get('name') or Path(current['path']).stem} + {Path(file.filename).stem}"
         record = set_active_template(composite_path, name=name, original_name=f"{current.get('originalName') or current['name']} + {file.filename}")
         write_slots([*current_slots, *appended_slots])
@@ -3823,6 +4123,12 @@ def api_template_upload() -> Any:
         shutil.rmtree(CACHE_DIR)
     ensure_dirs()
     meta = build_template_cache()
+    write_template_split_guides(
+        target,
+        extract_psd_split_positions(target, int(meta["width"]), int(meta["height"])),
+        int(meta["width"]),
+        int(meta["height"]),
+    )
     slots = detect_and_save_slots()
     write_template_state({}, record["id"])
     return jsonify(
@@ -3948,21 +4254,34 @@ def api_export() -> Any:
     alpha_composite_clipped(result, overlay, 0, 0)
 
     clear_dir(OUTPUT_DIR)
+    if payload.get("splitByDividers"):
+        split_positions = detect_export_split_positions(result, ordered_slots)
+        out = OUTPUT_DIR / "export_split.zip"
+        part_count = save_split_zip(result, split_positions, output_format, out)
+        return jsonify(
+            {
+                "ok": True,
+                "url": f"/api/output/{out.name}",
+                "filename": out.name,
+                "kind": "zip",
+                "parts": part_count,
+                "splitPositions": split_positions,
+            }
+        )
+
     if output_format == "png":
         out = OUTPUT_DIR / "export.png"
-        result.save(out)
     else:
         out = OUTPUT_DIR / "export.jpg"
-        background = Image.new("RGB", result.size, (255, 255, 255))
-        background.paste(result, mask=result.split()[-1])
-        background.save(out, quality=95, optimize=True)
+    save_export_image(result, out, output_format)
 
-    return jsonify({"ok": True, "url": f"/api/output/{out.name}"})
+    return jsonify({"ok": True, "url": f"/api/output/{out.name}", "filename": out.name, "kind": output_format})
 
 
 @app.get("/api/output/<filename>")
 def api_output(filename: str) -> Any:
-    return send_file(OUTPUT_DIR / filename, as_attachment=False)
+    output_path = OUTPUT_DIR / filename
+    return send_file(output_path, as_attachment=output_path.suffix.lower() == ".zip")
 
 
 @app.post("/api/reset-cache")

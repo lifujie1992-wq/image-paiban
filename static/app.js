@@ -1739,12 +1739,12 @@ async function saveSlots() {
   }
 }
 
-async function exportImage() {
-  const button = $("exportBtn");
+async function exportImage(splitByDividers = false) {
+  const button = splitByDividers ? $("exportZipBtn") : $("exportBtn");
   const originalText = button.textContent;
   button.disabled = true;
-  button.textContent = "导出中...";
-  setStatus("正在导出，请等待 30-60 秒");
+  button.textContent = splitByDividers ? "打包中..." : "导出中...";
+  setStatus(splitByDividers ? "正在按分割线导出 ZIP，请等待 30-60 秒" : "正在导出，请等待 30-60 秒");
   try {
     await saveTemplateStateNow({ silent: true });
     const data = await requestJson("/api/export", {
@@ -1756,14 +1756,26 @@ async function exportImage() {
         slots: state.slots,
         fit: $("fitMode").value,
         renderMode: "fast",
-        format: $("format").value
+        format: $("format").value,
+        splitByDividers
       })
     });
     const link = $("downloadLink");
     link.href = `${data.url}?t=${Date.now()}`;
     link.hidden = false;
-    setStatus("导出完成，已生成链接");
-    window.open(link.href, "_blank");
+    if (splitByDividers || data.kind === "zip") {
+      link.target = "_self";
+      link.download = data.filename || "export_split.zip";
+      link.textContent = "下载分段 ZIP";
+      setStatus(`分段导出完成：${data.parts || 1} 张，ZIP 已开始下载`);
+      link.click();
+    } else {
+      link.target = "_blank";
+      link.removeAttribute("download");
+      link.textContent = "打开导出图";
+      setStatus("导出完成，已生成链接");
+      window.open(link.href, "_blank");
+    }
   } catch (error) {
     console.error(error);
     setStatus(`导出失败：${error.message}`);
@@ -1881,7 +1893,8 @@ function bindEvents() {
   $("clearHotspots").addEventListener("click", clearHotspots);
   $("saveSlots").addEventListener("click", saveSlots);
   $("saveSlotsPanel").addEventListener("click", saveSlots);
-  $("exportBtn").addEventListener("click", exportImage);
+  $("exportBtn").addEventListener("click", () => exportImage(false));
+  $("exportZipBtn")?.addEventListener("click", () => exportImage(true));
   $("fitMode").addEventListener("change", () => {
     renderSlots();
     scheduleTemplateStateSave();
